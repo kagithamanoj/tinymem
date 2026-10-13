@@ -167,3 +167,99 @@ def test_cli_roundtrip(tmp_path, capsys):
     main(["--db", db, "recall", "aisle or window?"])
     out = capsys.readouterr().out
     assert "aisle" in out.lower()
+
+
+# -- v2: negation, identity, history, hybrid, confidence ------------------
+
+
+def test_negation_extraction():
+    from tinymem.consolidate import rule_extract
+
+    assert rule_extract("I don't like middle seats") == ["dislikes middle seats"]
+    assert rule_extract("I do not prefer red-eyes") == ["dislikes red-eyes"]
+
+
+def test_reported_speech_not_extracted():
+    from tinymem.consolidate import rule_extract
+
+    assert rule_extract("My friend Tom said he loves red-eye flights") == []
+    assert rule_extract("Priya loves window seats") == []
+
+
+def test_identity_salience_reaches_threshold():
+    assert salience.score("My home airport is DFW") >= 0.45
+    assert salience.score("My manager's name is Dana") >= 0.45
+
+
+def test_history_shows_superseded():
+    m = mem()
+    m.remember("I prefer aisle seats", ts=BASE.isoformat())
+    m.remember(
+        "Actually I prefer window seats now",
+        ts=(BASE + timedelta(days=1)).isoformat(),
+    )
+    m.consolidate(now=BASE + timedelta(days=2))
+    rows = m.history("seat")
+    statuses = {r["status"] for r in rows}
+    assert "superseded" in statuses and "active" in statuses
+    assert any("aisle" in r["text"] for r in rows if r["status"] == "superseded")
+
+
+def test_reinforcement_links_sources():
+    m = mem()
+    m.remember("My home airport is DFW", ts=BASE.isoformat())
+    m.remember(
+        "My home airport is DFW", ts=(BASE + timedelta(days=1)).isoformat()
+    )
+    m.consolidate(now=BASE + timedelta(days=2))
+    rows = m.store.facts_matching("home airport is dfw", include_superseded=False)
+    assert len(rows) == 1
+    assert len(m.store.episodes_for_fact(rows[0]["id"])) == 2
+
+
+def test_hybrid_mode_agrees_with_bm25():
+    m = mem()
+    m.remember("I prefer aisle seats", ts=BASE.isoformat())
+    m.remember("My home airport is DFW", ts=BASE.isoformat())
+    m.consolidate(now=BASE)
+    bm25 = m.recall("which airport?", k=1, now=BASE, mode="bm25")
+    hybrid = m.recall("which airport?", k=1, now=BASE, mode="hybrid")
+    assert bm25[0]["text"] == hybrid[0]["text"]
+
+
+def test_hashed_embeddings_deterministic_and_normalized():
+    from tinymem.providers import HashedEmbeddingProvider
+    import math
+
+    ep = HashedEmbeddingProvider()
+    a = ep.embed(["I prefer aisle seats"])
+    b = ep.embed(["I prefer aisle seats"])
+    assert a == b
+    assert abs(math.sqrt(sum(x * x for x in a[0])) - 1.0) < 1e-9
+
+
+def test_not_confident_on_irrelevant():
+    from tinymem.recall import is_confident
+
+    m = mem()
+    m.remember("I prefer aisle seats", ts=BASE.isoformat())
+    m.consolidate(now=BASE)
+    results = m.recall("what is my mother's maiden name?", now=BASE)
+    assert not m.confident(results)
+    assert not is_confident(results)
+
+
+def test_confident_on_relevant():
+    m = mem()
+    m.remember("My home airport is DFW", ts=BASE.isoformat())
+    m.consolidate(now=BASE)
+    results = m.recall("which airport do I fly from?", now=BASE)
+    assert m.confident(results)
+
+
+def test_stemmer_unifies_inflections():
+    from tinymem.recall import tokenize
+
+    assert tokenize("allergies") == tokenize("allergic")
+    assert tokenize("seats") == tokenize("seat")
+    assert tokenize("prefers") == tokenize("prefer")

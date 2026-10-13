@@ -8,7 +8,7 @@ from . import salience
 from .consolidate import consolidate
 from .decay import apply_decay
 from .providers import default_provider
-from .recall import recall as hybrid_recall
+from .recall import is_confident, recall as hybrid_recall
 from .store import Store
 
 DEFAULT_PATH = "~/.tinymem/memory.db"
@@ -29,9 +29,37 @@ class Memory:
         eid = self.store.add_episode(ts, kind, text, s)
         return eid, round(s, 3)
 
-    def recall(self, query, k=5, now=None):
-        """Hybrid recall. Returns ranked dicts with text, score, provenance."""
-        return hybrid_recall(self.store, query, k=k, now=now)
+    def recall(self, query, k=5, now=None, mode="bm25"):
+        """Hybrid recall. mode is "bm25" or "hybrid" (adds embeddings).
+
+        Returns ranked dicts with text, score, kind, provenance.
+        """
+        return hybrid_recall(self.store, query, k=k, now=now, mode=mode)
+
+    def confident(self, results):
+        """Does the memory actually know the answer? Below the line,
+        it should say it does not know instead of guessing."""
+        return is_confident(results)
+
+    def history(self, phrase, k=20):
+        """Fact lineage for a topic, including superseded facts.
+
+        Answers 'what did I used to believe?' Every entry shows its
+        status, confidence, and when it last changed.
+        """
+        out = []
+        for f in self.store.facts_matching(phrase, include_superseded=True)[:k]:
+            sources = self.store.episodes_for_fact(f["id"])
+            out.append(
+                {
+                    "text": f["text"],
+                    "status": f["status"],
+                    "confidence": round(f["confidence"], 3),
+                    "updated": f["updated_ts"][:10],
+                    "sources": len(sources),
+                }
+            )
+        return out
 
     def consolidate(self, now=None):
         """Run the sleep cycle: episodes become facts."""

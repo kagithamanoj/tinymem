@@ -24,13 +24,18 @@ CONFLICT_JACCARD = 0.4
 UPDATE_MARKERS = ("actually", "changed my mind", "instead", "correction", "update:")
 
 EXTRACTION_PATTERNS = [
+    # Negation first: "I don't like X" must not match the "I like" rule.
+    (re.compile(r"\bi\s+(?:do\s+not|don'?t)\s+(?:like|prefer|love)\s+(.+)", re.I),
+     "dislikes {}"),
+    (re.compile(r"\bi\s+don'?t\s+want\s+(.+)", re.I),
+     "does not want {}"),
     (re.compile(r"\bi\s+(?:really\s+)?(?:prefer|love|like)\s+(.+)", re.I),
      "prefers {}"),
     (re.compile(r"\bi\s+(?:hate|dislike|can'?t stand)\s+(.+)", re.I),
      "dislikes {}"),
     (re.compile(r"\bi\s+am\s+allergic\s+to\s+(.+)", re.I),
      "allergic to {}"),
-    (re.compile(r"\bmy\s+([a-z][a-z ]{1,28}?)\s+is\s+(.+)", re.I),
+    (re.compile(r"\bmy\s+([a-z][a-z' ]{1,30}?)\s+is\s+(.+)", re.I),
      "{} is {}"),
     (re.compile(r"\bremember(?:\s+that)?\s+(.+)", re.I),
      "{}"),

@@ -53,15 +53,30 @@ identity details, commitments. Each fact carries a confidence, a status
 (active or superseded), and links back to the episodes it came from, so
 every answer can show its work.
 
-**Recall** searches both tiers with one hybrid score:
+**Recall** searches both tiers with one hybrid score. Relevance is the
+gate, recency and salience are amplifiers: the non-semantic terms
+multiply the semantic score instead of adding to it, so a recent but
+irrelevant memory can never outrank a relevant one.
 
 ```
-score = 0.55 * BM25 + 0.25 * recency + 0.20 * salience
+bm25 mode:   semantic * (0.55 + 0.25*recency + 0.20*salience)
+hybrid mode: blend   * (0.60 + 0.25*recency + 0.15*salience)
+             where blend = 0.55*BM25 + 0.45*embedding
 ```
 
-BM25 is implemented from scratch (about 40 lines) with a small stemmer.
+BM25 and a small stemmer are implemented from scratch (about 60 lines).
 Recency is exponential with a 45-day time constant. Facts get a small
-trust bonus: they survived consolidation.
+trust bonus, also gated on relevance: they survived consolidation.
+
+Two honesty mechanisms sit on top of recall:
+
+- **Confidence.** Below a calibrated top-1 score, the memory reports low
+  confidence instead of claiming an answer. On the benchmark, answerable
+  questions score 0.84+, unanswerable ones score 0.00. The line is drawn
+  at 0.45.
+- **History.** `history("seat")` returns the fact lineage including
+  superseded facts, so the memory can answer what it used to believe and
+  show exactly when it changed its mind.
 
 ## The model describes, code decides
 
@@ -105,3 +120,20 @@ A consolidation pass:
 Not a vector database. Not a framework. Not a demo wired to one provider.
 It is the smallest thing that actually implements episodic memory,
 consolidation, and forgetting, with tests and a benchmark to prove it.
+
+## Embeddings, measured honestly
+
+`recall()` has two modes. `bm25` is the default: pure lexical, deterministic,
+offline. `hybrid` blends in embedding cosine similarity
+(`0.55*BM25 + 0.45*embedding`) before the relevance gate is applied.
+
+The embedding provider is a tiny interface with two implementations. When
+`OPENAI_API_KEY` is set, hybrid mode uses OpenAI's text-embedding-3-small.
+Otherwise it falls back to a deterministic token-hashed baseline that runs
+fully offline. The hashed baseline is documented as a baseline, not a
+replacement for real embeddings.
+
+The benchmark runs every question in both modes and reports the comparison
+side by side, so the embedding upgrade has to earn its place with numbers,
+not promises. Swapping providers is one constructor argument; nothing else
+in the engine changes.

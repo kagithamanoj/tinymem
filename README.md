@@ -30,10 +30,19 @@ Three tiers:
   answer can show its work. Contradictions are resolved, not duplicated:
   "actually, I prefer window seats now" supersedes the old preference and
   keeps it in history.
-- **Recall.** One hybrid score over both tiers:
-  `0.55 * BM25 + 0.25 * recency + 0.20 * salience`, with BM25 and a small
-  stemmer implemented from scratch. Facts get a trust bonus: they survived
-  consolidation.
+- **Recall.** One hybrid score over both tiers. Relevance is the gate,
+  recency and salience are amplifiers: the non-semantic terms multiply the
+  semantic score instead of adding to it, so a recent but irrelevant memory
+  can never outrank a relevant one.
+  - `bm25` (default): `semantic * (0.55 + 0.25*recency + 0.20*salience)`
+  - `hybrid`: `blend * (0.60 + 0.25*recency + 0.15*salience)`,
+    where `blend = 0.55*BM25 + 0.45*embedding`
+
+  BM25 and a small stemmer are implemented from scratch. Facts get a trust
+  bonus, also gated on relevance: they survived consolidation. Two honesty
+  mechanisms sit on top: below a calibrated score the memory reports low
+  confidence instead of guessing, and `history()` returns the fact lineage
+  including superseded facts, so you can ask what it used to believe.
 
 And one architectural rule enforced everywhere: **the model describes,
 code decides.** The model may propose facts during consolidation. Salience,
@@ -55,7 +64,17 @@ python -m tinymem remember "I prefer aisle seats on flights"
 python -m tinymem remember "My home airport is DFW"
 python -m tinymem consolidate
 python -m tinymem recall "which airport do I fly from?"
-# [0.731] (fact) home airport is dfw  (fact #2 from 1 episode(s))
+# [1.044] (fact) home airport is dfw  (fact #2 from 1 episode(s))
+python -m tinymem recall "which airport do I fly from?" --mode hybrid
+python -m tinymem history "seat"   # fact lineage, superseded facts included
+python -m tinymem explain "I prefer aisle seats"  # why this salience score
+```
+
+Ask something it was never told and it says so instead of guessing:
+
+```bash
+python -m tinymem recall "what is my mother's maiden name?"
+# (low confidence: the memory does not claim to know this)
 ```
 
 As a library, ten lines:
@@ -90,16 +109,24 @@ python -m tinymem consolidate
 
 ## Evaluation
 
-A scripted 10-day benchmark: 16 episodes (preferences, identity details,
-noise, one contradiction), then 8 quiz questions against recall. Fully
-deterministic, no API key needed.
+Two scripted benchmark suites, each run in both recall modes (`bm25` and
+`hybrid`), fully deterministic with no API key needed:
+
+- **standard**: a 10-day everyday scenario, 16 episodes, 8 questions.
+- **adversarial**: reported-speech traps ("Tom said he loves red-eye
+  flights" must never become your preference), negation ("I don't like
+  middle seats"), contradictions with and without explicit revision
+  language, unanswerable questions (must report low confidence, not
+  guess), reinforcement (repeated episodes strengthen one fact instead of
+  duplicating it), and temporal history (what did I used to believe?).
+  16 episodes, 10 questions.
 
 ```bash
 make eval
 ```
 
-Current results: **8/8 recalled**, contradiction resolved correctly. Full
-report in [docs/evals.md](docs/evals.md). The design rationale lives in
+Current results: **36/36 across both suites and both modes**. Full report
+in [docs/evals.md](docs/evals.md). The design rationale lives in
 [docs/design.md](docs/design.md).
 
 ## Layout
@@ -110,10 +137,11 @@ report in [docs/evals.md](docs/evals.md). The design rationale lives in
 - `tinymem/consolidate.py` - the sleep cycle: distill, reinforce, supersede
 - `tinymem/decay.py` - exponential forgetting, stale-fact pruning
 - `tinymem/providers.py` - tiny provider interface (OpenAI or offline stub)
-- `tinymem/memory.py` - the facade: remember, recall, consolidate, forget
+- `tinymem/memory.py` - the facade: remember, recall, consolidate, forget,
+  history, confidence
 - `tinymem/cli.py` - command line interface
-- `evals/` - benchmark scenario and runner
-- `tests/` - 20 tests, all offline
+- `evals/` - benchmark scenarios, demo, and runner
+- `tests/` - 30 tests, all offline
 
 ## License
 

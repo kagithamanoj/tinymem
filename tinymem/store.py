@@ -136,6 +136,18 @@ class Store:
             "SELECT * FROM facts WHERE status = 'active' ORDER BY confidence DESC"
         ).fetchall()
 
+    def facts_matching(self, phrase, include_superseded=True):
+        """All facts about a topic, newest first. Used by history()."""
+        like = f"%{phrase.lower()}%"
+        if include_superseded:
+            where = "lower(text) LIKE ?"
+        else:
+            where = "lower(text) LIKE ? AND status = 'active'"
+        return self.conn.execute(
+            f"SELECT * FROM facts WHERE {where} ORDER BY updated_ts DESC",
+            (like,),
+        ).fetchall()
+
     def episodes_for_fact(self, fact_id):
         return self.conn.execute(
             "SELECT e.* FROM episodes e"

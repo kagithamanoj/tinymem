@@ -71,3 +71,82 @@ def default_provider():
         except RuntimeError:
             pass
     return StubProvider()
+
+
+class EmbeddingProvider:
+    """Embed a list of texts into fixed-dim vectors."""
+
+    name = "embed-base"
+    dim = 0
+
+    def embed(self, texts):
+        raise NotImplementedError
+
+
+class HashedEmbeddingProvider(EmbeddingProvider):
+    """Deterministic offline baseline: token-hashed sparse vectors.
+
+    Documented honestly: this is a comparison baseline so the benchmark
+    can measure BM25 against embedding-style recall without an API key.
+    It is not a replacement for real embeddings.
+    """
+
+    name = "hashed"
+
+    def __init__(self, dim=256):
+        self.dim = dim
+
+    def embed(self, texts):
+        import hashlib
+        import math
+
+        from .recall import tokenize
+
+        vecs = []
+        for text in texts:
+            v = [0.0] * self.dim
+            for tok in tokenize(text):
+                h = int(hashlib.md5(tok.encode()).hexdigest(), 16) % self.dim
+                v[h] += 1.0
+            norm = math.sqrt(sum(x * x for x in v)) or 1.0
+            vecs.append([x / norm for x in v])
+        return vecs
+
+
+class OpenAIEmbeddingProvider(EmbeddingProvider):
+    """OpenAI embeddings over urllib. No SDK dependency."""
+
+    name = "openai-embed"
+
+    def __init__(self, model=None):
+        self.api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set")
+        self.model = model or os.environ.get("TINYMEM_EMBED_MODEL",
+                                             "text-embedding-3-small")
+        self.dim = 1536
+
+    def embed(self, texts):
+        body = json.dumps({"model": self.model, "input": texts}).encode()
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/embeddings",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode())
+        items = sorted(data["data"], key=lambda d: d["index"])
+        return [d["embedding"] for d in items]
+
+
+def default_embedding_provider():
+    """Real embeddings when a key is present, hashed baseline otherwise."""
+    if os.environ.get("OPENAI_API_KEY"):
+        try:
+            return OpenAIEmbeddingProvider()
+        except RuntimeError:
+            pass
+    return HashedEmbeddingProvider()

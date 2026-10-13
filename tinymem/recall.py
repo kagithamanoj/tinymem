@@ -22,11 +22,16 @@ STOP = frozenset(
 
 def stem(word):
     """Tiny stemmer. Not Porter, but honest: strips the inflections that
-    break recall (prefers/prefer, seats/seat) and leaves the rest alone."""
+    break recall (prefers/prefer, seats/seat, allergies/allergic) and
+    leaves the rest alone."""
     if len(word) <= 4:
         return word
-    if word.endswith("ies"):
-        return word[:-3] + "y"
+    if word.endswith("ies") and len(word) > 5:
+        return word[:-3]  # allergies -> allerg
+    if word.endswith("ical") and len(word) > 7:
+        return word[:-4]
+    if word.endswith("ic") and len(word) > 5:
+        return word[:-2]  # allergic -> allerg
     if word.endswith("ing") and len(word) > 6:
         return word[:-3]
     if word.endswith("ed") and len(word) > 5:
@@ -48,6 +53,24 @@ def tokenize(text):
         for t in re.findall(r"[a-z0-9]+", text.lower())
         if t not in STOP
     ]
+
+
+def cosine(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+# Below this top-1 score, recall() reports low confidence: the memory
+# does not claim to know the answer. Calibrated on evals/benchmark.py;
+# see docs/evals.md for the score distribution.
+RECALL_CONFIDENCE = 0.45
+
+
+def is_confident(results, threshold=RECALL_CONFIDENCE):
+    """True when the top result scores above the know/don't-know line."""
+    return bool(results) and results[0]["score"] >= threshold
 
 
 def parse_ts(ts):
@@ -107,11 +130,18 @@ class BM25:
         return out
 
 
-def recall(store, query, k=5, now=None):
+def recall(store, query, k=5, now=None, mode="bm25", embed_provider=None):
     """Hybrid recall over episodes and facts.
 
-    score = 0.55 * bm25 + 0.25 * recency + 0.20 * salience
-    Facts get a small trust bonus: they survived consolidation.
+    Relevance is the gate, recency and salience are amplifiers: the
+    non-semantic terms multiply the semantic score instead of adding to
+    it, so a recent but irrelevant memory can never outrank a relevant
+    one. Facts get a small trust bonus, also gated on relevance.
+
+    mode="bm25":   sem * (0.55 + 0.25*recency + 0.20*salience)
+    mode="hybrid": blend * (0.60 + 0.25*recency + 0.15*salience)
+                   where blend = 0.55*BM25 + 0.45*embedding
+
     Returns a list of dicts with text, score, kind, and provenance.
     """
     now = now or datetime.now(timezone.utc)
@@ -125,15 +155,31 @@ def recall(store, query, k=5, now=None):
 
     raw = BM25(docs).score(query)
     peak = max(raw.values()) or 1.0
+    sem = {did: raw[did] / peak for did, _ in docs}
+
+    if mode == "hybrid":
+        if embed_provider is None:
+            from .providers import default_embedding_provider
+
+            embed_provider = default_embedding_provider()
+        vecs = embed_provider.embed([query] + [text for _, text in docs])
+        qv = vecs[0]
+        cos = {did: cosine(qv, v) for (did, _), v in zip(docs, vecs[1:])}
+        peak_cos = max(cos.values()) or 1.0
+        sem = {
+            did: 0.55 * sem[did] + 0.45 * (cos[did] / peak_cos)
+            for did, _ in docs
+        }
 
     scored = []
     for e in episodes:
         key = "e%d" % e["id"]
-        s = (
-            0.55 * (raw[key] / peak)
-            + 0.25 * recency(e["ts"], now)
-            + 0.20 * e["salience"]
-        )
+        if mode == "hybrid":
+            s = sem[key] * (0.60 + 0.25 * recency(e["ts"], now)
+                            + 0.15 * e["salience"])
+        else:
+            s = sem[key] * (0.55 + 0.25 * recency(e["ts"], now)
+                            + 0.20 * e["salience"])
         scored.append(
             {
                 "kind": "episode",
@@ -145,12 +191,13 @@ def recall(store, query, k=5, now=None):
         )
     for f in facts:
         key = "f%d" % f["id"]
-        s = (
-            0.55 * (raw[key] / peak)
-            + 0.25 * recency(f["updated_ts"], now)
-            + 0.20 * f["confidence"]
-            + 0.10
-        )
+        if mode == "hybrid":
+            s = sem[key] * (0.60 + 0.25 * recency(f["updated_ts"], now)
+                            + 0.15 * f["confidence"])
+        else:
+            s = sem[key] * (0.55 + 0.25 * recency(f["updated_ts"], now)
+                            + 0.20 * f["confidence"])
+        s += 0.10 * sem[key]  # trust bonus, gated on relevance
         sources = store.episodes_for_fact(f["id"])
         scored.append(
             {

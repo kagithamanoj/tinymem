@@ -17,6 +17,8 @@ PREFERENCE_VERBS = (
 )
 EXPLICIT_MEMORY = ("remember", "don't forget", "do not forget", "note to self")
 SELF_REF = re.compile(r"\b(my|mine|i'm|i am)\b", re.I)
+# "my X is Y": identity statements are among the most durable facts.
+IDENTITY = re.compile(r"\bmy\s+[a-z][a-z' ]{0,30}?\s+is\s+", re.I)
 CONCRETE = re.compile(r"\d")
 
 
@@ -30,7 +32,9 @@ def score(text):
     if any(v in t for v in EXPLICIT_MEMORY):
         s += 0.25  # the user explicitly asked to remember
     if SELF_REF.search(t):
-        s += 0.10  # about the user, likely to matter later
+        s += 0.15  # about the user, likely to matter later
+    if IDENTITY.search(t):
+        s += 0.10  # identity statements ("my X is Y") are durable
     if CONCRETE.search(t):
         s += 0.05  # concrete details beat vague ones
     if text.strip().endswith("?"):
@@ -48,7 +52,9 @@ def explain(text):
     if any(v in t for v in EXPLICIT_MEMORY):
         reasons.append("explicit remember +0.25")
     if SELF_REF.search(t):
-        reasons.append("self-reference +0.10")
+        reasons.append("self-reference +0.15")
+    if IDENTITY.search(t):
+        reasons.append("identity statement +0.10")
     if CONCRETE.search(t):
         reasons.append("concrete detail +0.05")
     if text.strip().endswith("?"):

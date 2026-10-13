@@ -4,6 +4,7 @@
     python -m tinymem recall "window or aisle?" -k 5
     python -m tinymem consolidate
     python -m tinymem forget "aisle"
+    python -m tinymem history "seat"
     python -m tinymem stats
     python -m tinymem decay
 """
@@ -21,13 +22,15 @@ def cmd_remember(mem, args):
 
 
 def cmd_recall(mem, args):
-    results = mem.recall(args.query, k=args.k)
+    results = mem.recall(args.query, k=args.k, mode=args.mode)
     if not results:
         print("nothing remembered yet")
         return
     for r in results:
         print(f"[{r['score']:.3f}] ({r['kind']}) {r['text']}")
         print(f"         {r['provenance']} | {r['ts'][:10]}")
+    if not mem.confident(results):
+        print("(low confidence: the memory does not claim to know this)")
 
 
 def cmd_consolidate(mem, args):
@@ -61,6 +64,19 @@ def cmd_explain(mem, args):
     print(mem.explain(args.text))
 
 
+def cmd_history(mem, args):
+    rows = mem.history(args.phrase)
+    if not rows:
+        print(f"no history for {args.phrase!r}")
+        return
+    for r in rows:
+        print(f"[{r['status']}] {r['text']}")
+        print(
+            f"         confidence {r['confidence']}, updated {r['updated']},"
+            f" {r['sources']} source(s)"
+        )
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="tinymem", description="a memory for agents")
     p.add_argument("--db", default=DEFAULT_PATH, help="sqlite path")
@@ -73,6 +89,7 @@ def build_parser():
     r = sub.add_parser("recall", help="recall relevant memories")
     r.add_argument("query")
     r.add_argument("-k", type=int, default=5)
+    r.add_argument("--mode", choices=["bm25", "hybrid"], default="bm25")
     r.set_defaults(fn=cmd_recall)
 
     r = sub.add_parser("consolidate", help="distill episodes into facts")
@@ -91,6 +108,10 @@ def build_parser():
     r = sub.add_parser("explain", help="explain a salience score")
     r.add_argument("text")
     r.set_defaults(fn=cmd_explain)
+
+    r = sub.add_parser("history", help="fact lineage incl. superseded facts")
+    r.add_argument("phrase")
+    r.set_defaults(fn=cmd_history)
 
     return p
 
